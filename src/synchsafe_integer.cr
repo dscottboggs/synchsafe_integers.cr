@@ -7,9 +7,10 @@ class InvalidSynchsafeInteger < Exception
   end
 end
 
-struct Int32
-  SYNCH_SAFE_FROM_MAX = 0b0111_1111_0111_1111_0111_1111_0111_1111_i32
-  SYNCH_SAFE_TO_MAX   = 0b0111_1111_0111_1111_0111_1111_0111_1111_i32.synchsafe_decode
+{% for t in [Int32, UInt32] %}
+struct {{ t }}
+  SYNCH_SAFE_FROM_MAX = 0b0111_1111_0111_1111_0111_1111_0111_1111_{{ t.stringify[0...1].downcase.id }}32
+  SYNCH_SAFE_TO_MAX   = 0b0111_1111_0111_1111_0111_1111_0111_1111_{{ t.stringify[0...1].downcase.id }}32.synchsafe_decode
 
   def synchsafe_decode
     bytes = uninitialized UInt8[4]
@@ -48,3 +49,35 @@ struct Int32
     result
   end
 end
+{% end %}
+
+{% for t in [Int16, UInt16] %}
+struct {{ t }}
+  SYNCH_SAFE_FROM_MAX = 0b0111_1111_0111_1111_{{ t.stringify[0...1].downcase.id }}16
+  SYNCH_SAFE_TO_MAX = 0b0111_1111_0111_1111_{{ t.stringify[0...1].downcase.id }}16.synchsafe_decode
+
+  def synchsafe_decode
+    bytes = uninitialized UInt8[2]
+    IO::ByteFormat::BigEndian.encode self, bytes.to_slice
+    bytes.each_with_index { |n, i| raise InvalidSynchsafeInteger.new(bytes, self, i) if n & 0b1000_0000_u8 != 0 }
+    # put the first bit of byte 0 in the high bit of byte 1
+    bytes[1] = bytes[1] | ((bytes[0] & 0b0000_0001_u8) << 7)
+    # shift bits 6-1 down one, leaving a max-14-bit properly encoded i/u16
+    bytes[0] = ((bytes[0] & 0b0111_1110_u8) >> 1)
+    IO::ByteFormat::BigEndian.decode typeof(self), bytes.to_slice
+  end
+
+  def synchsafe_encode
+    raise OverflowError.new "#{self} is too large to be converted to synchsafe" if self > SYNCH_SAFE_TO_MAX
+    bytes = uninitialized UInt8[2]
+    IO::ByteFormat::BigEndian.encode self, bytes.to_slice
+    # grab bit 7 of byte 1 (the least order)
+    carry = bytes[1] & 0b1000_0000_u8
+    # zero bit 7 of byte 1
+    bytes[1] &= 0b0111_1111_u8
+    # shift bits 6-0 of byte 0 up one, then shift the high-bit of byte 1 into bit 0 of byte 0.
+    bytes[0] = ((bytes[0] & 0b0111_1111_u8) << 1) | (carry >> 7)
+    IO::ByteFormat::BigEndian.decode typeof(self), bytes.to_slice
+  end
+end
+{% end %}
